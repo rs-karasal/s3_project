@@ -1,4 +1,3 @@
-import asyncio
 import aiofiles
 from aiobotocore.session import get_session
 from contextlib import asynccontextmanager
@@ -19,14 +18,16 @@ class S3Client:
         async with self.session.create_client("s3", **self.config) as client:
             yield client
 
-    async def upload_part(self, client, bucket_name, object_name, part_number, data):
-        response = await client.upload_part(
-            Bucket=bucket_name,
-            Key=object_name,
-            PartNumber=part_number,
-            UploadId=self.upload_id,
-            Body=data
-        )
+    async def upload_part(self, client, bucket_name, object_name, part_number, temp_file_path, part_size):
+        async with aiofiles.open(temp_file_path, 'rb') as part_file:
+            data = await part_file.read(part_size)
+            response = await client.upload_part(
+                Bucket=bucket_name,
+                Key=object_name,
+                PartNumber=part_number,
+                UploadId=self.upload_id,
+                Body=data
+            )
         return response
 
     async def create_multipart_upload(self, client, bucket_name, object_name):
@@ -41,19 +42,3 @@ class S3Client:
             MultipartUpload={"Parts": parts}
         )
         return response
-
-    async def upload_file(self, file_path: str):
-        object_name = file_path.split("/")[-1]
-        part_size = 5 * 1024 * 1024  # 5MB
-        parts = []
-        async with self.get_client() as client:
-            await self.create_multipart_upload(client, self.bucket_name, object_name)
-            part_number = 1
-            async with aiofiles.open(file_path, 'rb') as file:
-                while chunk := await file.read(part_size):
-                    future = asyncio.ensure_future(
-                        self.upload_part(client, self.bucket_name, object_name, part_number, chunk)
-                    )
-                    parts.append({"ETag": (await future)["ETag"], "PartNumber": part_number})
-                    part_number += 1
-            await self.complete_multipart_upload(client, self.bucket_name, object_name, parts)

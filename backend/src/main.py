@@ -1,10 +1,11 @@
 import os
 import aiofiles
 import asyncio
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from dotenv import load_dotenv
 from src.s3.s3_client import S3Client
 
 load_dotenv()
@@ -21,7 +22,8 @@ main_app.add_middleware(
 
 @main_app.post("/upload/")
 async def upload_file(file: UploadFile = File(...)):
-    part_size = 5 * 1024 * 1024  # 5MB
+    part_size = 5 * 1024 * 1024     # Size of chunk is 5MB
+
     s3_client = S3Client(
         access_key=os.getenv("AWS_ACCESS_KEY_ID"),
         secret_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
@@ -30,35 +32,32 @@ async def upload_file(file: UploadFile = File(...)):
     )
 
     async with s3_client.get_client() as client:
-        # Начало мультизагрузки в S3
         await s3_client.create_multipart_upload(client, s3_client.bucket_name, file.filename)
         part_number = 1
-        parts = []
+        parts = []  # List of parts to complete multipart upload
 
-        try:
-            async with aiofiles.tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                while chunk := await file.read(part_size):
-                    # Запись части файла во временный файл
-                    await temp_file.write(chunk)
+        while chunk := await file.read(size=part_size):
+            temp_file_path = f"/tmp/{file.filename}.part{part_number}"
 
-                    # Перемещение курсора в начало временного файла для чтения данных
-                    await temp_file.seek((part_number - 1) * part_size)
-                    
-                    # Загрузка части файла в S3
-                    async with aiofiles.open(temp_file.name, 'rb') as part_file:
-                        part_chunk = await part_file.read(part_size)
-                        response = await s3_client.upload_part(client, s3_client.bucket_name, file.filename, part_number, part_chunk)
-                        parts.append({"ETag": response["ETag"], "PartNumber": part_number})
-                        part_number += 1
+            async with aiofiles.open(temp_file_path, 'wb') as temp_file:
+                await temp_file.write(chunk)
 
-        finally:
-            # Удаление временного файла после завершения
-            os.remove(temp_file.name)
+            # Upload part to S3
+            upload_task = asyncio.create_task(
+                s3_client.upload_part(client, s3_client.bucket_name, file.filename, part_number, temp_file_path, part_size)
+            )
+            etag = (await upload_task)["ETag"]
+            parts.append({"ETag": etag, "PartNumber": part_number})
 
-        # Завершение мультизагрузки в S3
+            # Delete temp file after upload
+            os.remove(temp_file_path)
+            part_number += 1
+
+        # Complete multipart upload
         await s3_client.complete_multipart_upload(client, s3_client.bucket_name, file.filename, parts)
 
     return {"info": f"file '{file.filename}' uploaded to S3"}
+
 
 @main_app.get("/")
 async def serve_frontend():
