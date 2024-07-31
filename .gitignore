@@ -164,3 +164,5 @@ cython_debug/
 *.mov
 
 .ruff_cache/
+
+.DS_Store
