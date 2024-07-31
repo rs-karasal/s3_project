@@ -162,3 +162,5 @@ cython_debug/
 .idea/
 
 *.mov
+
+.ruff_cache/
